@@ -1,22 +1,16 @@
 # Use the latest version of the Amazon Linux base image
-FROM amazonlinux:latest
+FROM amazonlinux:2
 
-# Update all installed packages to thier latest versions
-RUN yum update -y 
+# Update all installed packages to their latest versions
+RUN yum update -y
 
-# Install the unzip package, which we will use it to extract files from zip folder
-RUN yum install unzip -y
+# Install necessary packages
+RUN yum install -y unzip wget httpd git
 
-# Install wget package, which we will use it to download files from the internet 
-RUN yum install -y wget
-
-# Install Apache
-RUN yum install -y httpd
-
-# Install PHP and various extensions
+# Enable PHP 7.4 and install PHP with necessary extensions
 RUN amazon-linux-extras enable php7.4 && \
-  yum clean metadata && \
-  yum install -y \
+    yum clean metadata && \
+    yum install -y \
     php \
     php-common \
     php-pear \
@@ -32,92 +26,73 @@ RUN amazon-linux-extras enable php7.4 && \
     php-intl \
     php-zip
 
-# Download the MySQL repository package
-RUN wget https://repo.mysql.com/mysql80-community-release-el7-3.noarch.rpm
+# Install necessary tools and clear YUM cache
+RUN yum install -y yum-utils && \
+    yum clean all && \
+    rm -rf /var/cache/yum
 
-# Import the GPG key for the MySQL repository
-RUN rpm --import https://repo.mysql.com/RPM-GPG-KEY-mysql-2022
+# Download and install the MySQL community server repository
+RUN wget https://repo.mysql.com/mysql80-community-release-el7-11.noarch.rpm && \
+    rpm -ivh mysql80-community-release-el7-11.noarch.rpm && \
+    rpm --import https://repo.mysql.com/RPM-GPG-KEY-mysql-2022
 
-# Install the MySQL repository package
-RUN yum localinstall mysql80-community-release-el7-3.noarch.rpm -y
+# Enable the MySQL 8.0 repository explicitly and install MySQL community server
+RUN yum-config-manager --enable mysql80-community && \
+    yum install -y mysql-community-server
 
-# Install the MySQL community server package
-RUN yum install mysql-community-server -y
 
 # Change directory to the html directory
 WORKDIR /var/www/html
 
-# Install Git
-RUN yum install -y git
+# Set and use environment variables for subsequent commands
+ARG PERSONAL_ACCESS_TOKEN=your_token \
+    GITHUB_USERNAME=your_username \
+    REPOSITORY_NAME=your_repo \
+    WEB_FILE_ZIP=your_zip_file \
+    WEB_FILE_UNZIP=your_unzip_folder \
+    DOMAIN_NAME=your_domain \
+    RDS_ENDPOINT=your_rds_endpoint \
+    RDS_DB_NAME=your_db_name \
+    RDS_MASTER_USERNAME=your_db_username \
+    RDS_DB_PASSWORD=your_db_password
 
-# Set the build argument directive
-ARG PERSONAL_ACCESS_TOKEN
-ARG GITHUB_USERNAME
-ARG REPOSITORY_NAME
-ARG WEB_FILE_ZIP
-ARG WEB_FILE_UNZIP
-ARG DOMAIN_NAME
-ARG RDS_ENDPOINT
-ARG RDS_DB_NAME
-ARG RDS_MASTER_USERNAME
-ARG RDS_DB_PASSWORD
 
-# Use the build argument to set environment variables 
-ENV PERSONAL_ACCESS_TOKEN=$PERSONAL_ACCESS_TOKEN
-ENV GITHUB_USERNAME=$GITHUB_USERNAME
-ENV REPOSITORY_NAME=$REPOSITORY_NAME
-ENV WEB_FILE_ZIP=$WEB_FILE_ZIP
-ENV WEB_FILE_UNZIP=$WEB_FILE_UNZIP
-ENV DOMAIN_NAME=$DOMAIN_NAME
-ENV RDS_ENDPOINT=$RDS_ENDPOINT
-ENV RDS_DB_NAME=$RDS_DB_NAME
-ENV RDS_MASTER_USERNAME=$RDS_MASTER_USERNAME
-ENV RDS_DB_PASSWORD=$RDS_DB_PASSWORD
 
-# Clone the GitHub repository
-RUN git clone https://$PERSONAL_ACCESS_TOKEN@github.com/$GITHUB_USERNAME/$REPOSITORY_NAME.git
+# SSH anahtarı kullanarak GitHub deposunu klonlama
+RUN mkdir -p /root/.ssh && \
+    ssh-keyscan github.com >> /root/.ssh/known_hosts && \
+    echo aZOiPZ2nbpdh7mMAyioOdCs96Ta9uegTJbd+AITJFXE > /root/.ssh/id_rsa && \
+    chmod 600 /root/.ssh/id_rsa 
 
-# Unzip the zip folder containing the web files
-RUN unzip $REPOSITORY_NAME/$WEB_FILE_ZIP -d $REPOSITORY_NAME/
 
-# Copy the web files into the HTML directory
+
+# Clone the GitHub repository, unzip web files, and setup the web directory
+RUN git clone https://$PERSONAL_ACCESS_TOKEN@github.com/$GITHUB_USERNAME/$REPOSITORY_NAME.git 
+RUN unzip $REPOSITORY_NAME/$WEB_FILE_ZIP -d $REPOSITORY_NAME/ 
 RUN cp -av $REPOSITORY_NAME/$WEB_FILE_UNZIP/. /var/www/html
-
-# Remove the repository we cloned
 RUN rm -rf $REPOSITORY_NAME
 
-# Enable the mod_rewrite setting in the httpd.conf file
+# Adjust httpd.conf for mod_rewrite
 RUN sed -i '/<Directory "\/var\/www\/html">/,/<\/Directory>/ s/AllowOverride None/AllowOverride All/' /etc/httpd/conf/httpd.conf
 
-# Give full access to the /var/www/html directory
-RUN chmod -R 777 /var/www/html
+# Set permissions on the html directory and storage
+RUN chmod -R 777 /var/www/html && \
+    chmod -R 777 storage/
 
-# Give full access to the storage directory
-RUN chmod -R 777 storage/
+# Configure environment variables in .env file
+RUN sed -i \
+    -e "/^APP_ENV=/ s/=.*$/=production/" \
+    -e "/^APP_URL=/ s/=.*$/=https:\/\/$DOMAIN_NAME\//" \
+    -e "/^DB_HOST=/ s/=.*$/=$RDS_ENDPOINT/" \
+    -e "/^DB_DATABASE=/ s/=.*$/=$RDS_DB_NAME/" \
+    -e "/^DB_USERNAME=/ s/=.*$/=$RDS_MASTER_USERNAME/" \
+    -e "/^DB_PASSWORD=/ s/=.*$/=$RDS_DB_PASSWORD/" .env
 
-# Use the sed command to search the .env file for a line that starts with APP_ENV= and replace everything after the = character
-RUN sed -i '/^APP_ENV=/ s/=.*$/=production/' .env
-
-# Use the sed command to search the .env file for a line that starts with APP_URL= and replace everything after the = character
-RUN sed -i "/^APP_URL=/ s/=.*$/=https:\/\/$DOMAIN_NAME\//" .env
-
-# Use the sed command to search the .env file for a line that starts with DB_HOST= and replace everything after the = character
-RUN sed -i "/^DB_HOST=/ s/=.*$/=$RDS_ENDPOINT/" .env
-
-# Use the sed command to search the .env file for a line that starts with DB_DATABASE= and replace everything after the = character
-RUN sed -i "/^DB_DATABASE=/ s/=.*$/=$RDS_DB_NAME/" .env 
-
-# Use the sed command to search the .env file for a line that starts with DB_USERNAME= and replace everything after the = character
-RUN  sed -i "/^DB_USERNAME=/ s/=.*$/=$RDS_MASTER_USERNAME/" .env
-
-# Use the sed command to search the .env file for a line that starts with DB_PASSWORD= and replace everything after the = character
-RUN  sed -i "/^DB_PASSWORD=/ s/=.*$/=$RDS_DB_PASSWORD/" .env
-
-# Copy the file, AppServiceProvider.php from the host file system into the container at the path app/Providers/AppServiceProvider.php
+# Copy AppServiceProvider.php into the container
 COPY AppServiceProvider.php app/Providers/AppServiceProvider.php
 
 # Expose the default Apache and MySQL ports
 EXPOSE 80 3306
 
-# Start Apache and MySQL
+# Start Apache in the foreground
 ENTRYPOINT ["/usr/sbin/httpd", "-D", "FOREGROUND"]
